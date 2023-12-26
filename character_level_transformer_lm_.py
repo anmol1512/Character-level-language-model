@@ -19,7 +19,7 @@ batch_size= 32
 block_size=256
 learning_rate=1e-3
 epochs=5000
-eval_interval=300
+eval_interval=100
 eval_iter=200
 n_embds=32
 # head_size=16
@@ -29,7 +29,6 @@ tt.manual_seed(1512)
 
 # Input dataset containing all the work of shakespeare
 # !wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
-
 
 # Reading the file f-->input.txt
 with open('input.txt','r') as f:
@@ -99,6 +98,41 @@ xb,yb=get_batch('train')
 print(xb.shape)
 print(yb.shape)
 
+class FeedForwardNN(nn.Module):
+  def __init__(self):
+    super().__init__()
+    self.ffnn=nn.Sequential(
+        nn.Linear(n_embds,n_embds),
+        nn.ReLU()
+    )
+  def forward(self,x):
+    return self.ffnn(x)
+
+""" **Feed forward neural network**
+1. A feedforward neural network is a type of artificial neural network in which nodes' connections do not form a loop.
+2. Often referred to as a multi-layered network of neurons.
+3. feedforward neural networks are so named because all information flows in a forward manner only.
+"""
+
+class MultiHead(nn.Module):
+  def __init__(self,num_heads,head_size):
+    super().__init__()
+    self.heads=nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+
+  def forward(self,x):
+    return tt.cat([h(x) for h in self.heads],dim=-1)
+
+"""**Multi-Head self attention**
+
+In the context of the multi-head self-attention mechanism in the Transformer architecture, the idea is to project the input into multiple subspaces (heads), each with its own learnable parameters. Each head computes a separate attention distribution, capturing different aspects of the relationships within the input sequence. The outputs from all heads are then concatenated and linearly transformed to produce the final output.
+
+**Advantages**
+1.  It acts as a form of regularization, making the model less sensitive to noise in the training data.
+2. The attention weights produced by different heads can provide insights into which parts of the input sequence are relevant for specific heads.
+3. Parallelization or parallel processing is computationally efficient in terms of usage of hardware resources and training time.
+4. Reduce overfitting and makes model more robust and capable of generalizing well to different types of data
+"""
+
 class Head(nn.Module):
   def __init__(self,head_size):
     super().__init__()
@@ -114,7 +148,7 @@ class Head(nn.Module):
     q=self.query(x)
     k=self.key(x)
     wei=(q @ k.transpose(-2,-1)) * q.shape[-1]**-0.5#(B,T,T)
-    '''wei is known as attention score as every token attends every other token,
+    '''wei is known as attention scores/weights as every token attends every other token,
      and then we normalize it and called them as scaled attention'''
 
     # -----DECODER-----
@@ -133,20 +167,27 @@ class nanogptmodel(nn.Module):
     self.position_embedding=nn.Embedding(block_size,n_embds)
 
     '''Communication mechanism so that tokens can attend to its previous tokens.'''
-    self.sa_head=Head(n_embds)
+    # self.sa_head=Head(n_embds)
+    self.sa_heads=MultiHead(4, n_embds//4)
+
+    '''Feed forward neural network block to think on the comunicated information operating on token level individually'''
+    self.neural_net=FeedForwardNN()
 
     '''Decoding the information loaded encoded token sequence via transformation.'''
     self.lm_head=nn.Linear(n_embds,vocab_size)
 
   def forward(self,xb,yb=None):
     B,T=xb.shape
+
     token_embd=self.token_embedding(xb) #(B,T) -> (B,T,nmbds)
     position_embd=self.position_embedding(tt.arange(T,device=device)) #(T) -> (T,n_embds)
     x=token_embd+position_embd # (B,T,n_embds) ----[Broadcasting rules]
 
-    x_attend=self.sa_head(x) # (B,T,n_embds) -> (B,T,head_size)
+    x_attend=self.sa_heads(x) # (B,T,n_embds) -> (B,T,head_size)
 
-    logits=self.lm_head(x_attend)  # (B,T,head_size) -> (B,T,vocab_size)
+    x_think=self.neural_net(x_attend) # (B,T,head_size) -> (B,T,n_embds)
+
+    logits=self.lm_head(x_attend)  # (B,T,n_embds) -> (B,T,vocab_size)
 
     if yb==None:
       loss=None
@@ -209,7 +250,7 @@ for i in range(epochs):
 
   if i%eval_interval==0:
     loss=evaluate_loss()
-    print(f"Step: {i+1}, train_loss: {loss['train_loss']:.4f}, val_loss: {loss['val_loss']:.4f}")
+    print(f"Step: {i}, train_loss: {loss['train_loss']:.4f}, val_loss: {loss['val_loss']:.4f}")
 
   #forward pass
   xb,yb=get_batch('train')
@@ -223,3 +264,10 @@ for i in range(epochs):
   optimizer.step()
 
 print(decode(model.generate(context,max_token)[0].tolist()))
+
+"""
+1. bigram model performance -> Train_loss: 2.4691, Val_loss: 2.4889.
+2. single head self attention block performance -> train_loss: 2.1595, val_loss: 2.1689.
+3. multi head self attention block performance -> train_loss: 0.6562, val_loss: 0.6810.
+4. multi head self attention block +  Position-wise Feed-Forward Networks performance -> train_loss: 0.6378, val_loss: 0.6548
+"""
