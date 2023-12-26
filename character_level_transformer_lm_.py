@@ -23,7 +23,7 @@ eval_interval=100
 eval_iter=200
 n_embds=32
 # head_size=16
-max_token=100
+max_token=500
 
 tt.manual_seed(1512)
 
@@ -98,41 +98,6 @@ xb,yb=get_batch('train')
 print(xb.shape)
 print(yb.shape)
 
-class FeedForwardNN(nn.Module):
-  def __init__(self):
-    super().__init__()
-    self.ffnn=nn.Sequential(
-        nn.Linear(n_embds,n_embds),
-        nn.ReLU()
-    )
-  def forward(self,x):
-    return self.ffnn(x)
-
-""" **Feed forward neural network**
-1. A feedforward neural network is a type of artificial neural network in which nodes' connections do not form a loop.
-2. Often referred to as a multi-layered network of neurons.
-3. feedforward neural networks are so named because all information flows in a forward manner only.
-"""
-
-class MultiHead(nn.Module):
-  def __init__(self,num_heads,head_size):
-    super().__init__()
-    self.heads=nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-
-  def forward(self,x):
-    return tt.cat([h(x) for h in self.heads],dim=-1)
-
-"""**Multi-Head self attention**
-
-In the context of the multi-head self-attention mechanism in the Transformer architecture, the idea is to project the input into multiple subspaces (heads), each with its own learnable parameters. Each head computes a separate attention distribution, capturing different aspects of the relationships within the input sequence. The outputs from all heads are then concatenated and linearly transformed to produce the final output.
-
-**Advantages**
-1.  It acts as a form of regularization, making the model less sensitive to noise in the training data.
-2. The attention weights produced by different heads can provide insights into which parts of the input sequence are relevant for specific heads.
-3. Parallelization or parallel processing is computationally efficient in terms of usage of hardware resources and training time.
-4. Reduce overfitting and makes model more robust and capable of generalizing well to different types of data
-"""
-
 class Head(nn.Module):
   def __init__(self,head_size):
     super().__init__()
@@ -145,19 +110,72 @@ class Head(nn.Module):
     self.register_buffer('lower_tri',tt.tril(tt.ones((block_size,block_size),dtype=tt.long))) # (T,T) tensor is created and registered as buffer.
 
   def forward(self,x): # x is the encoding of its identity+its position.
+    B,T,C = x.shape
     q=self.query(x)
     k=self.key(x)
     wei=(q @ k.transpose(-2,-1)) * q.shape[-1]**-0.5#(B,T,T)
-    '''wei is known as attention scores/weights as every token attends every other token,
+    '''wei is known as attention score as every token attends every other token,
      and then we normalize it and called them as scaled attention'''
 
     # -----DECODER-----
-    wei=wei.masked_fill(self.lower_tri==0,float('-inf')) #(B,T,T)
+    wei=wei.masked_fill(self.lower_tri[:T,:T]==0,float('-inf')) #(B,T,T)
     wei=F.softmax(wei,dim=1) # Aggregating all the previous token information
 
     v=self.value(x)
     out=wei @ v # (B,T,T) @ (B,T,head_size) -> (B,T,head_size)
     return out # input(B,T,n_embd) -> out(B,T,head_size)
+
+class MultiHead(nn.Module):
+  def __init__(self,num_heads,head_size):
+    super().__init__()
+    self.heads=nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+    # self.project=nn.Linear(num_heads*head_size,n_embds)
+    self.project=nn.Linear(n_embds,n_embds)
+
+  def forward(self,x):
+    concat_heads=tt.cat([h(x) for h in self.heads],dim=-1)
+    return self.project(concat_heads)
+
+"""**Multi-Head self attention**
+
+In the context of the multi-head self-attention mechanism in the Transformer architecture, the idea is to project the input into multiple subspaces (heads), each with its own learnable parameters. Each head computes a separate attention distribution, capturing different aspects of the relationships within the input sequence. The outputs from all heads are then concatenated and linearly transformed to produce the final output.
+
+**Advantages**
+1.  It acts as a form of regularization, making the model less sensitive to noise in the training data.
+2. The attention weights produced by different heads can provide insights into which parts of the input sequence are relevant for specific heads.
+3. Parallelization or parallel processing is computationally efficient in terms of usage of hardware resources and training time.
+4. Reduce overfitting and makes model more robust and capable of generalizing well to different types of data
+"""
+
+class FeedForwardNN(nn.Module):
+  def __init__(self):
+    super().__init__()
+    self.ffnn=nn.Sequential(
+        nn.Linear(n_embds,4*n_embds),
+        nn.ReLU(),
+        nn.Linear(4*n_embds,n_embds)
+    )
+  def forward(self,x):
+    return self.ffnn(x)
+
+""" **Feed forward neural network**
+1. A feedforward neural network is a type of artificial neural network in which nodes' connections do not form a loop.
+2. Often referred to as a multi-layered network of neurons.
+3. feedforward neural networks are so named because all information flows in a forward manner only.
+"""
+
+class TransformerBlock(nn.Module):
+  # communication followed by computation
+  def __init__(self,n_heads,n_embds):
+    super().__init__()
+    head_size=n_embds//n_heads
+    self.sa_heads=MultiHead(n_heads,head_size)
+    self.neural_net=FeedForwardNN()
+
+  def forward(self,x):
+    x_attend=x+self.sa_heads(x)
+    x_think=x_attend+self.neural_net(x_attend)
+    return x_think
 
 class nanogptmodel(nn.Module):
   def __init__(self):
@@ -166,12 +184,20 @@ class nanogptmodel(nn.Module):
     self.token_embedding=nn.Embedding(vocab_size,n_embds)
     self.position_embedding=nn.Embedding(block_size,n_embds)
 
+    """
     '''Communication mechanism so that tokens can attend to its previous tokens.'''
     # self.sa_head=Head(n_embds)
     self.sa_heads=MultiHead(4, n_embds//4)
 
     '''Feed forward neural network block to think on the comunicated information operating on token level individually'''
     self.neural_net=FeedForwardNN()
+    """
+    # Sequential Transformer blocks
+    self.block=nn.Sequential(
+        TransformerBlock(4,n_embds),
+        TransformerBlock(4,n_embds),
+        TransformerBlock(4,n_embds)
+    )
 
     '''Decoding the information loaded encoded token sequence via transformation.'''
     self.lm_head=nn.Linear(n_embds,vocab_size)
@@ -179,15 +205,17 @@ class nanogptmodel(nn.Module):
   def forward(self,xb,yb=None):
     B,T=xb.shape
 
-    token_embd=self.token_embedding(xb) #(B,T) -> (B,T,nmbds)
+    token_embd=self.token_embedding(xb) #(B,T) -> (B,T,n_embds)
     position_embd=self.position_embedding(tt.arange(T,device=device)) #(T) -> (T,n_embds)
     x=token_embd+position_embd # (B,T,n_embds) ----[Broadcasting rules]
 
+    '''
     x_attend=self.sa_heads(x) # (B,T,n_embds) -> (B,T,head_size)
-
     x_think=self.neural_net(x_attend) # (B,T,head_size) -> (B,T,n_embds)
+    '''
+    x=self.block(x) # Three transformer block in sequencial manner.
 
-    logits=self.lm_head(x_attend)  # (B,T,n_embds) -> (B,T,vocab_size)
+    logits=self.lm_head(x)  # (B,T,n_embds) -> (B,T,vocab_size)
 
     if yb==None:
       loss=None
@@ -227,7 +255,7 @@ logits,loss=model(xb,yb)
 print(logits.shape)
 print(loss)
 
-context=tt.zeros((1,8), dtype=tt.long,device=device)
+context=tt.zeros((1,1), dtype=tt.long,device=device)
 print(decode(model.generate(context,max_token)[0].tolist()))
 
 @tt.no_grad()
@@ -265,9 +293,13 @@ for i in range(epochs):
 
 print(decode(model.generate(context,max_token)[0].tolist()))
 
-"""
-1. bigram model performance -> Train_loss: 2.4691, Val_loss: 2.4889.
+"""1. bigram model performance -> Train_loss: 2.4691, Val_loss: 2.4889.
 2. single head self attention block performance -> train_loss: 2.1595, val_loss: 2.1689.
 3. multi head self attention block performance -> train_loss: 0.6562, val_loss: 0.6810.
-4. multi head self attention block +  Position-wise Feed-Forward Networks performance -> train_loss: 0.6378, val_loss: 0.6548
+4. multi head self attention block +  Position-wise Feed-Forward Networks performance -> train_loss: 0.6378, val_loss: 0.6548.
+5. 3 transformer block of point 4 -> train_loss: 0.3761, val_loss: 0.3830.
+
+6. 3 transformer block of point 4 with skip connection in each block -> train_loss: 0.3154, val_loss: 0.3265, NOTE: point 5 losses were reached in approx epochs/2 training time.
+
+7. Added projection layer for both multihead and FFNN and added 1 hidden layer in FFNN -> train_loss: 0.2998, val_loss: 0.3077.
 """
