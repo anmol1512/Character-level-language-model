@@ -98,6 +98,21 @@ xb,yb=get_batch('train')
 print(xb.shape)
 print(yb.shape)
 
+# Custom implementation of Layer normalization layer by scratch
+class LayerNorm:
+  def __init__(self,dim,eps=1e-3):
+    self.eps=eps
+    self.gamma=tt.ones(dim,device=device)
+    self.beta=tt.zeros(dim,device=device)
+  def __call__(self,x):
+    xmean=x.mean(-1,keepdim=True)
+    xvar=x.var(-1,keepdim=True)
+    xhat=(x-xmean)/(tt.sqrt(xvar+self.eps))
+    out=xhat*self.gamma+self.beta
+    return out
+  def parameters(self):
+    return {'gamma': self.gamma,'beta': self.beta}
+
 class Head(nn.Module):
   def __init__(self,head_size):
     super().__init__()
@@ -166,17 +181,21 @@ class FeedForwardNN(nn.Module):
 
 class TransformerBlock(nn.Module):
   # communication followed by computation
-  def __init__(self,n_heads,n_embds):
+  def __init__(self,n_heads,total_head_size):
     super().__init__()
-    head_size=n_embds//n_heads
+    head_size=total_head_size//n_heads
     self.sa_heads=MultiHead(n_heads,head_size)
     self.neural_net=FeedForwardNN()
+    self.ln1=nn.LayerNorm(n_embds)
+    self.ln2=nn.LayerNorm(n_embds)
 
   def forward(self,x):
-    x_attend=x+self.sa_heads(x)
-    x_think=x_attend+self.neural_net(x_attend)
+    x_attend=x+self.sa_heads(self.ln1(x))
+    x_think=x_attend+self.neural_net(self.ln2(x_attend))
     return x_think
 
+n_heads=4
+n_decoder_layer=16
 class nanogptmodel(nn.Module):
   def __init__(self):
     super().__init__()
@@ -193,11 +212,8 @@ class nanogptmodel(nn.Module):
     self.neural_net=FeedForwardNN()
     """
     # Sequential Transformer blocks
-    self.block=nn.Sequential(
-        TransformerBlock(4,n_embds),
-        TransformerBlock(4,n_embds),
-        TransformerBlock(4,n_embds)
-    )
+    self.block=nn.Sequential(*[TransformerBlock(n_heads,n_embds) for _ in range(n_decoder_layer)])
+    self.ln_layer=nn.LayerNorm(n_embds)
 
     '''Decoding the information loaded encoded token sequence via transformation.'''
     self.lm_head=nn.Linear(n_embds,vocab_size)
@@ -214,6 +230,7 @@ class nanogptmodel(nn.Module):
     x_think=self.neural_net(x_attend) # (B,T,head_size) -> (B,T,n_embds)
     '''
     x=self.block(x) # Three transformer block in sequencial manner.
+    x=self.ln_layer(x)
 
     logits=self.lm_head(x)  # (B,T,n_embds) -> (B,T,vocab_size)
 
