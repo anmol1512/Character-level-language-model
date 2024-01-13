@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import time
+import math
 
 batch_size= 128
 block_size=256
@@ -25,7 +26,11 @@ n_embds=512
 n_heads=8
 max_token=2000
 n_decoder_layer=8
-drop_ratio=0.2
+
+attn_drop_ratio=0.2
+proj_drop_ratio=0.2
+neural_drop_ratio=0.2
+embd_drop_ratio=0.2
 
 tt.manual_seed(1512)
 
@@ -115,49 +120,7 @@ class LayerNorm:
   def parameters(self):
     return {'gamma': self.gamma,'beta': self.beta}
 
-class Head(nn.Module):
-  def __init__(self,head_size):
-    super().__init__()
-    '''self-attention layers[query,key and value]'''
-    self.query=nn.Linear(n_embds,head_size,bias=False)
-    self.key=nn.Linear(n_embds,head_size,bias=False)
-    self.dropout=nn.Dropout(drop_ratio)
-    self.value=nn.Linear(n_embds,head_size,bias=False)
 
-    '''lower triangular matrix is registered as buffer for masking purpose'''
-    self.register_buffer('lower_tri',tt.tril(tt.ones((block_size,block_size),dtype=tt.long))) # (T,T) tensor is created and registered as buffer.
-
-  def forward(self,x): # x is the encoding of its identity+its position.
-    B,T,C = x.shape
-    q=self.query(x)
-    k=self.key(x)
-    wei=(q @ k.transpose(-2,-1)) * q.shape[-1]**-0.5#(B,T,T)
-    '''wei is known as attention score as every token attends every other token,
-     and then we normalize it and called them as scaled attention'''
-
-    # -----DECODER-----
-    wei=wei.masked_fill(self.lower_tri[:T,:T]==0,float('-inf')) #(B,T,T)
-    wei=F.softmax(wei,dim=1) # Aggregating all the previous token information
-    wei=self.dropout(wei)
-
-
-    v=self.value(x)
-    out=wei @ v # (B,T,T) @ (B,T,head_size) -> (B,T,head_size)
-    return out # input(B,T,n_embd) -> out(B,T,head_size)
-
-class MultiHead(nn.Module):
-  def __init__(self,num_heads,head_size):
-    super().__init__()
-    self.heads=nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-    # self.project=nn.Linear(num_heads*head_size,n_embds)
-    self.project=nn.Linear(n_embds,n_embds)
-    self.dropout=nn.Dropout(drop_ratio)
-
-  def forward(self,x):
-    concat_heads=tt.cat([h(x) for h in self.heads],dim=-1)
-    out=self.project(concat_heads)
-    out=self.dropout(out)
-    return out
 
 """**Multi-Head self attention**
 
@@ -170,17 +133,6 @@ In the context of the multi-head self-attention mechanism in the Transformer arc
 4. Reduce overfitting and makes model more robust and capable of generalizing well to different types of data
 """
 
-class FeedForwardNN(nn.Module):
-  def __init__(self):
-    super().__init__()
-    self.ffnn=nn.Sequential(
-        nn.Linear(n_embds,4*n_embds),
-        nn.ReLU(),
-        nn.Linear(4*n_embds,n_embds),
-        nn.Dropout(drop_ratio)
-    )
-  def forward(self,x):
-    return self.ffnn(x)
 
 """ **Feed forward neural network**
 1. A feedforward neural network is a type of artificial neural network in which nodes' connections do not form a loop.
@@ -188,61 +140,111 @@ class FeedForwardNN(nn.Module):
 3. feedforward neural networks are so named because all information flows in a forward manner only.
 """
 
+class SelfAttention(nn.Module):
+  '''Communication mechanism so that tokens can attend to its previous tokens.'''
+
+  def __init__(self,n_heads,total_hs):
+    super().__init__()
+    self.n_heads=n_heads
+    self.total_hs=total_hs
+    assert self.total_hs%self.n_heads==0
+    self.attn_vectors=nn.Linear(n_embds,3*self.total_hs,bias=False)
+    self.attn_drop=nn.Dropout(attn_drop_ratio)
+    self.proj_drop=nn.Dropout(proj_drop_ratio)
+    self.projection=nn.Linear(self.total_hs,n_embds)
+
+    self.register_buffer('lower_tri',tt.tril(tt.ones(1,1,block_size,block_size,dtype=tt.long)))
+    # lower triangular matrix is created and registered as buffer.
+
+  def forward(self,x_embd):
+    B,T,C=x_embd.shape #(B,T,n_embds)
+    q,k,v=self.attn_vectors(x_embd).split(self.total_hs,dim=-1)
+
+    q=q.view(B,T,self.n_heads,q.shape[-1]//self.n_heads).transpose(1,2) #(B,n_heads,T,head_size)
+    k=k.view(B,T,self.n_heads,k.shape[-1]//self.n_heads).transpose(1,2) #(B,n_heads,T,head_size)
+    v=v.view(B,T,self.n_heads,v.shape[-1]//self.n_heads).transpose(1,2) #(B,n_heads,T,head_size)
+    wei=q@k.transpose(-2,-1) # Dot product (compatibility matrix) (B,n_heads,T,T)
+    wei/=math.sqrt(q.shape[-1]) # Scaled dot product (B,n_heads,T,T)
+    masked_wei=wei.masked_fill(self.lower_tri[:,:,:T,:T]==0,float('-inf')) # (B,n_heads,T,T)
+    soft_wei=F.softmax(masked_wei,dim=-1) # (B,n_heads,T,T) attending only the current and its previous tokens.
+    soft_wei=self.attn_drop(soft_wei)
+    
+    out=soft_wei@v # (B,n_heads,T,head_size)
+    out=out.transpose(1,2).contiguous().view(B,T,C)
+
+    project_out=self.projection(out)
+
+    return self.proj_drop(project_out)
+
+
 class TransformerBlock(nn.Module):
   # communication followed by computation
   def __init__(self,n_heads,total_head_size):
     super().__init__()
-    head_size=total_head_size//n_heads
-    self.sa_heads=MultiHead(n_heads,head_size)
-    self.neural_net=FeedForwardNN()
+    self.sa_heads=SelfAttention(n_heads,total_head_size)
+
+    '''Feed forward neural network block to think on the comunicated information
+       operating on token level individually'''
+    self.ann=nn.ModuleDict(dict(
+      hidden=nn.Linear(n_embds,4*n_embds),
+      proj_neural=nn.Linear(4*n_embds,n_embds),
+      hidden_active=nn.ReLU(),
+      neural_drop=nn.Dropout(neural_drop_ratio)
+    ))
+
     self.ln1=nn.LayerNorm(n_embds)
     self.ln2=nn.LayerNorm(n_embds)
+
+    self.neural_net=lambda x:self.ann.neural_drop(self.ann.proj_neural(self.ann.hidden_active(self.ann.hidden(x))))
 
   def forward(self,x):
     x_attend=x+self.sa_heads(self.ln1(x))
     x_think=x_attend+self.neural_net(self.ln2(x_attend))
     return x_think
 
+
 class nanogptmodel(nn.Module):
+  '''GPT Language Model'''
   def __init__(self):
     super().__init__()
-    '''Encoding the input token sequence'''
-    self.token_embedding=nn.Embedding(vocab_size,n_embds)
-    self.position_embedding=nn.Embedding(block_size,n_embds)
-    self.dropout=nn.Dropout(drop_ratio)
 
-    """
-    '''Communication mechanism so that tokens can attend to its previous tokens.'''
-    # self.sa_head=Head(n_embds)
-    self.sa_heads=MultiHead(4, n_embds//4)
-
-    '''Feed forward neural network block to think on the comunicated information operating on token level individually'''
-    self.neural_net=FeedForwardNN()
-    """
-    # Sequential Transformer blocks
-    self.block=nn.Sequential(*[TransformerBlock(n_heads,n_embds) for _ in range(n_decoder_layer)])
-    self.ln_layer=nn.LayerNorm(n_embds)
+    '''Encoding the input token sequence t_em with position encoding p_em'''
+    self.transformer=nn.ModuleDict(dict(
+      t_em=nn.Embedding(vocab_size,n_embds), 
+      p_em=nn.Embedding(block_size,n_embds),
+      embd_drop=nn.Dropout(embd_drop_ratio),
+      block=nn.ModuleList([TransformerBlock(n_heads,n_embds) for _ in range(n_decoder_layer)]), 
+      ln=nn.LayerNorm(n_embds)
+    ))
 
     '''Decoding the information loaded encoded token sequence via transformation.'''
     self.lm_head=nn.Linear(n_embds,vocab_size)
 
+    t=self.transformer
+    self.input=lambda xb,pos_xb:t.embd_drop((t.t_em(xb)+t.p_em(pos_xb)))
+    self.output=lambda x:self.lm_head(t.ln(x))
+
   def forward(self,xb,yb=None):
     B,T=xb.shape
+    pos_xb=tt.arange(T,dtype=tt.long,device=device) # (T)
 
-    token_embd=self.token_embedding(xb) #(B,T) -> (B,T,n_embds)
-    position_embd=self.position_embedding(tt.arange(T,device=device)) #(T) -> (T,n_embds)
+    '''token_embd=self.transformer.t_em(xb) #(B,T) -> (B,T,n_embds)
+    position_embd=self.transformer.p_em(pos_xb) #(T) -> (T,n_embds)
     x=token_embd+position_embd # (B,T,n_embds) ----[Broadcasting rules]
-    x=self.dropout(x)
+    x=self.transformer.embd_drop(x)'''
+    
+    # (B,T,n_embds) + (T,n_embds) -> (B,T,n_embds) ----[Broadcasting rules]
+    x=self.input(xb,pos_xb)
+    
+    # Transformer block in sequencial manner.
+    for Transformer_block in self.transformer.block:
+      x=Transformer_block(x)
+    
+    # (B,T,n_embds) -> (B,T,vocab_size)
+    logits=self.output(x) 
 
-
-    '''
-    x_attend=self.sa_heads(x) # (B,T,n_embds) -> (B,T,head_size)
-    x_think=self.neural_net(x_attend) # (B,T,head_size) -> (B,T,n_embds)
-    '''
-    x=self.block(x) # Three transformer block in sequencial manner.
-    x=self.ln_layer(x)
-
-    logits=self.lm_head(x)  # (B,T,n_embds) -> (B,T,vocab_size)
+    '''x=self.ln_layer(x)
+    logits=self.lm_head(x)'''  
 
     if yb==None:
       loss=None
@@ -254,10 +256,11 @@ class nanogptmodel(nn.Module):
       yb=yb.view(B*T)
       logits=logits.view(B*T,C)
 
-      #negative log likelihood loss
+      #negative log likelihood loss / nll
       loss=F.cross_entropy(logits,yb)
     return logits,loss
-
+  
+  @tt.no_grad()
   def generate(self,idx,max_token):
 
     for _ in range(max_token):
