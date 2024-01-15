@@ -15,6 +15,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import time
 import math
+from .utils import CfgNode as CN
 
 batch_size= 128
 block_size=256
@@ -29,7 +30,6 @@ n_decoder_layer=8
 
 attn_drop_ratio=0.2
 proj_drop_ratio=0.2
-neural_drop_ratio=0.2
 embd_drop_ratio=0.2
 
 tt.manual_seed(1512)
@@ -139,7 +139,7 @@ In the context of the multi-head self-attention mechanism in the Transformer arc
 2. Often referred to as a multi-layered network of neurons.
 3. feedforward neural networks are so named because all information flows in a forward manner only.
 """
-
+#causal(unidirectional) self attention
 class SelfAttention(nn.Module):
   '''Communication mechanism so that tokens can attend to its previous tokens.'''
 
@@ -151,7 +151,7 @@ class SelfAttention(nn.Module):
     self.attn_vectors=nn.Linear(n_embds,3*self.total_hs,bias=False)
     self.attn_drop=nn.Dropout(attn_drop_ratio)
     self.proj_drop=nn.Dropout(proj_drop_ratio)
-    self.projection=nn.Linear(self.total_hs,n_embds)
+    self.proj=nn.Linear(self.total_hs,n_embds)
 
     self.register_buffer('lower_tri',tt.tril(tt.ones(1,1,block_size,block_size,dtype=tt.long)))
     # lower triangular matrix is created and registered as buffer.
@@ -172,11 +172,11 @@ class SelfAttention(nn.Module):
     out=soft_wei@v # (B,n_heads,T,head_size)
     out=out.transpose(1,2).contiguous().view(B,T,C)
 
-    project_out=self.projection(out)
+    project_out=self.proj(out)
 
     return self.proj_drop(project_out)
 
-
+#(multi-head SA +FFNN)
 class TransformerBlock(nn.Module):
   # communication followed by computation
   def __init__(self,n_heads,total_head_size):
@@ -187,15 +187,15 @@ class TransformerBlock(nn.Module):
        operating on token level individually'''
     self.ann=nn.ModuleDict(dict(
       hidden=nn.Linear(n_embds,4*n_embds),
-      proj_neural=nn.Linear(4*n_embds,n_embds),
+      proj=nn.Linear(4*n_embds,n_embds),
       hidden_active=nn.ReLU(),
-      neural_drop=nn.Dropout(neural_drop_ratio)
+      neural_drop=nn.Dropout(proj_drop_ratio)
     ))
 
     self.ln1=nn.LayerNorm(n_embds)
     self.ln2=nn.LayerNorm(n_embds)
 
-    self.neural_net=lambda x:self.ann.neural_drop(self.ann.proj_neural(self.ann.hidden_active(self.ann.hidden(x))))
+    self.neural_net=lambda x:self.ann.neural_drop(self.ann.proj(self.ann.hidden_active(self.ann.hidden(x))))
 
   def forward(self,x):
     x_attend=x+self.sa_heads(self.ln1(x))
@@ -205,24 +205,94 @@ class TransformerBlock(nn.Module):
 
 class nanogptmodel(nn.Module):
   '''GPT Language Model'''
-  def __init__(self):
+  def get_default_config():
+    '''All Hyperparameters related to transformer model'''
+    config=CN()
+    # either model_type or (n_decoder_layer,n_heads,n_embds) should be given
+    config.model_type='gpt'
+    config.n_decoder_layer=None
+    config.n_heads=None
+    config.n_embds=None
+
+    #below config should be provided externally
+    config.vocab_size=None
+    config.block_size=None
+    
+    #Dropout Hyperparameters
+    config.attn_drop_ratio=0.2
+    config.proj_drop_ratio=0.2
+    config.embd_drop_ratio=0.2
+
+    return config
+
+  def __init__(self,config):
     super().__init__()
 
+    assert config.vocab_size is not None
+    assert config.block_size is not None
+
+    block_params_checker=all([config.n_decoder_layer is not None,config.n_heads is not None,config.n_embds is not None])
+    model_type_checker=config.model_type is not None
+    assert model_type_checker^block_params_checker
+
+    if model_type_checker:
+      '''translate from model type to its corresponding configuration'''
+      config._update_dict({
+        #GPT1
+        'openai-gpt' :  dict(n_decoder_layer=12,n_heads=12,n_embds=768),
+        #GPT2
+        'gpt2' :        dict(n_decoder_layer=12,n_heads=12,n_embds=768),  #124M parameters.
+        'gpt2-medium' : dict(n_decoder_layer=24,n_heads=16,n_embds=1024), #355M parameter.
+        'gpt2-large' :  dict(n_decoder_layer=36,n_heads=20,n_embds=1280), #774M parameter.
+        'gpt2-xl' :     dict(n_decoder_layer=12,n_heads=12,n_embds=768),  # 1.5B parameter.
+        #Tiny custom version of GPT
+        'gpt-mini':     dict(n_layer=6, n_head=6, n_embd=192),
+        'gpt-micro':    dict(n_layer=4, n_head=4, n_embd=128),
+        'gpt-nano':     dict(n_layer=3, n_head=3, n_embd=48),
+      }[config.model_type])
+
+
     '''Encoding the input token sequence t_em with position encoding p_em'''
+    '''then applying 'n_decoder_layer' transformer block followed by a layer normalization layer'''
     self.transformer=nn.ModuleDict(dict(
-      t_em=nn.Embedding(vocab_size,n_embds), 
-      p_em=nn.Embedding(block_size,n_embds),
-      embd_drop=nn.Dropout(embd_drop_ratio),
-      block=nn.ModuleList([TransformerBlock(n_heads,n_embds) for _ in range(n_decoder_layer)]), 
-      ln=nn.LayerNorm(n_embds)
+      t_em=nn.Embedding(config.vocab_size,config.n_embds), 
+      p_em=nn.Embedding(config.block_size,config.n_embds),
+      embd_drop=nn.Dropout(config.embd_drop_ratio),
+      block=nn.ModuleList([TransformerBlock(config.n_heads,config.n_embds) for _ in range(config.n_decoder_layer)]), 
+      ln=nn.LayerNorm(config.n_embds)
     ))
 
     '''Decoding the information loaded encoded token sequence via transformation.'''
-    self.lm_head=nn.Linear(n_embds,vocab_size)
+    self.lm_head=nn.Linear(config.n_embds,config.vocab_size)
 
     t=self.transformer
     self.input=lambda xb,pos_xb:t.embd_drop((t.t_em(xb)+t.p_em(pos_xb)))
     self.output=lambda x:self.lm_head(t.ln(x))
+
+    #applying generic _init_weight() function to each layer and sublayer of the model 
+    self.apply(self._init_weight)
+
+    #applying custome initialization to residual projection layer according to GPT-2 paper
+    '''scaling the initialization by a factor i.e  1/sqrt(number of residual connection) '''
+    for param_name,param_value in self.named_parameters():
+      if param_name.endswith('proj.weight'):
+        nn.init.normal_(param_value,mean=0.0,std=1.0/math.sqrt(2*n_decoder_layer))
+    # printing total umber of parameters
+    total_param=sum([param.numel() for param in self.parameters()])
+    print(f'Number of parameter {total_param/1e6:.2f}M')
+
+  '''helps to initialize the weights and biases of the layer by filling out values taken from 
+  a scaled distribution ''' 
+  def _init_weight(self,layer):
+    if isinstance(layer,nn.Embedding):
+      nn.init.normal_(layer.weight,mean=0.0,std=1.0)
+    elif isinstance(layer,nn.Linear):
+      nn.init.normal_(layer.weight,mean=0.0,std=1.0)
+      if layer.bias is not None:
+        nn.init.zeros_(layer.bias)
+    elif isinstance(layer,nn.LayerNorm):
+      nn.init.ones_(layer.weight)
+      nn.init.zeros_(layer.bias)
 
   def forward(self,xb,yb=None):
     B,T=xb.shape

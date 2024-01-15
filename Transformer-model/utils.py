@@ -1,7 +1,7 @@
 import sys
 import os
 from ast import literal_eval
-import pyyaml
+import yaml
 import json
 
 
@@ -49,7 +49,9 @@ class CfgNode:
     def _dict_repr(self):
         return {key: val._dict_repr() if isinstance(val,CfgNode) else val for key,val in vars(self).items()}
     
-
+    def _update_dict(self,d):
+        vars(self).update(d)
+    
     def _update_args(self,args):
         '''Override an existing config attribute by getting input
         from sys.argv[1:]'''
@@ -59,7 +61,7 @@ class CfgNode:
         Hence we need to handle the nested case also.'''
         
         # Note: The (.) in arg is used to denote nested  sub-attributes.
-        '''eg- model.attention.drop_ratio=0.5'''
+        '''eg: --config.model.drop_ratio=0.5 --config.trainer.lr=1e-3'''
 
         for arg in args:
             pair=arg.split('=')
