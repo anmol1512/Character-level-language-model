@@ -1,10 +1,11 @@
 from model.transformer import nanogptmodel as nano
 from data.dataset import TextDataset
 from model.trainer import Trainer
-from model.utils.config import CfgNode as CN
-from model.utils.logger import setup_logging
-from model.utils.callbacks import batch_begin_callback
-from model.utils.callbacks import batch_end_callback
+from utils.config import CfgNode as CN
+from utils.logger import setup_logging
+from utils.callbacks import batch_begin_callback
+from utils.callbacks import batch_end_callback
+from utils.pre_processing import load_data
 import sys
 
 # Getting all config
@@ -46,7 +47,11 @@ if __name__ == '__main__':
     setup_logging(config)
 
     #construct the dataset
-    
+    '''load dataset and create a TextDataset'''
+    train_data_path = '\data\WMT2014_en-hi\train'
+    train_x,train_y = load_data(train_data_path+'/en',train_data_path+'/hi',min_len=5,max_len=config.data.block_size)
+    train_data = TextDataset(config.data,train_x,train_y)
+        
 
     #construct the model
 
