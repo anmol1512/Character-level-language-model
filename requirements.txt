@@ -1,3 +1,5 @@
 pytorch
 pyyaml
 ast
+bz2
+pickle

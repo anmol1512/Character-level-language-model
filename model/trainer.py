@@ -1,7 +1,9 @@
 from collections import defaultdict
-from model.utils.config import CfgNode as CN
+from utils.config import CfgNode as CN
 import torch as tt
 from torch.utils.data import Dataloader,RandomSampler
+from model.transformer import NanoGPTModel as nano
+from data.dataset import TextDataset
 import time
 
 class Trainer:
@@ -10,9 +12,6 @@ class Trainer:
     def get_default_config():
         C=CN()
 
-        #device type
-        C.device='auto'
-
         #data loader parameter
         C.num_workers=2
 
@@ -20,7 +19,7 @@ class Trainer:
         C.max_epoch=None
         C.learning_rate=1e-4
         C.weight_decay=0.1
-        C.betas=(0.9,0.95)
+        C.betas=(0.9,0.98)
         C.batch_size=128
 
         #inference config
@@ -28,17 +27,13 @@ class Trainer:
         C.eval_iter=300
         C.max_token=2000
 
-    def __init__(self,config,model,train_data) -> None:
+    def __init__(self,config: CN,model: nano,train_data: TextDataset) -> None:
         self.config=config
         self.model=model
         self.train_data=train_data
         self.optimizer=model.configure_optimizer(self.config)
         self.callbacks=defaultdict(list)
-
-        if config.device=='auto':
-            self.device=tt.device('cuda:0') if tt.cuda.is_available() else tt.device('cpu')
-        else:
-            self.device=config.device
+        self.device=model.device
         
         print('.....Sending model to {}......'.format(self.device))
         self.model=self.model.to(self.device)
@@ -67,7 +62,7 @@ class Trainer:
     def trigger_callbacks(self,event) -> None:
         callbacks=self.callbacks[event]
         for callback in callbacks:
-            callback()
+            callback(self)
     
     def run(self):
         #for code optimization
@@ -93,6 +88,7 @@ class Trainer:
         ''' Note: 1 EPOCH IS 1 STEP TOWARDS GLOBAL OPTIMA POINT'''
         while True:
             start_time = time.time()
+            self.trigger_callbacks('batch_begin')
 
             # GET A BATCH OF DATA
             try:
@@ -102,6 +98,7 @@ class Trainer:
                 batch = it.__next__()
             batch = [tup.to(train_config.device) for tup in batch]
             xb,yb = batch
+            xb,yb = xb.to(self.device), yb.to(self.device)
 
             # FORWARD PASS
             logits,loss = model(xb,yb)

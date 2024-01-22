@@ -1,4 +1,4 @@
-from model.transformer import nanogptmodel as nano
+from model.transformer import NanoGPTModel as nano
 from data.dataset import TextDataset
 from model.trainer import Trainer
 from utils.config import CfgNode as CN
@@ -44,16 +44,17 @@ if __name__ == '__main__':
     print('**************************CONFIG**************************\n')
     print(config)
     print('**************************CONFIG**************************\n')
-    setup_logging(config)
 
     #construct the dataset
-    '''load dataset and create a TextDataset'''
-    train_data_path = '\data\WMT2014_en-hi\train'
-    train_x,train_y = load_data(train_data_path+'/en',train_data_path+'/hi',min_len=5,max_len=config.data.block_size)
-    train_data = TextDataset(config.data,train_x,train_y)
+    '''load dataset and create a TextDataset''' 
+    train_x,train_y = load_data(x = config.data.train_file_path+'/en',y = config.data.train_file_path+'/hi',min_len = config.data.min_len,max_len = config.data.block_size)
+    train_data = TextDataset(config.data,train_x,train_y) # sequence_length is directly propotional to BLUE score
         
 
     #construct the model
+    model = nano(config.model)
+
+    setup_logging(config,model.get_num_parameters())
 
     #construct the trainer
     trainer = Trainer(config.trainer, model, dataset)

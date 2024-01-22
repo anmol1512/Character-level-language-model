@@ -13,7 +13,11 @@ class TextDataset(Dataset):
     @staticmethod
     def get_default_config() -> CN:
         C=CN()
+        C.min_len = 5
         C.block_size=256
+        C.train_file_path = '/data/WMT2014_en-hi/train'
+        C.test_file_path =  '/data/WMT2014_en-hi/test'
+        C.val_file_path =  '/data/WMT2014_en-hi/val'
         return C
 
     def __init__(self,config: CN,x: str, y: str) -> None:
