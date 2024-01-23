@@ -55,13 +55,22 @@ class TextDataset(Dataset):
     
     def __getitem__(self,idx: int) -> tuple[tt.tensor[int],tt.tensor[int]]:
         '''
+        input to the encode is of the format  `This is a car<EOS>`
+
+        output[logits] of the model is of the format `ye ek car hai<EOS>`
+
+        input to the decoder is of the format `<SOS>ye ek car hai`
+
+        we then compare `ouput` of the model with `input of decoder[1:]` to calculate the nll and BLUE Score
+
         block_size referes to the length of input sequence we are working upon
 
         '''
         start=[self.ctoi['<sos>']]
         end=[self.ctoi['<eos>']]
-        indx = self.padding(start + self.encoding(self.x[idx]) + end)
-        indy = self.padding(start + self.encoding(self.y[idx]) + end)
+        
+        indx = self.padding(self.encoding(self.x[idx]) + end)
+        indy = start + self.padding(self.encoding(self.y[idx]) + end)
 
         x = tt.tensor(indx, dtype=tt.long)
         y = tt.tensor(indy, dtype=tt.long)
@@ -72,4 +81,6 @@ class TextDataset(Dataset):
         seq_len = len(seq)
         if seq_len < self.sequence_len:
             seq =  seq + [0]*(self.sequence_len - seq_len)
+        else: 
+            seq =seq[:self.sequence_len-1] + [self.ctoi['<eos>']]
         return seq

@@ -21,7 +21,7 @@ class SentenceFilter:
         self.unique_sentences = set()
 
     def is_valid_length(self, sentence: str) -> bool:
-        return self.min_length <= len(sentence) <= self.max_length
+        return self.min_length < len(sentence) < self.max_length
 
     def __iter__(self):
         for xi, yi in (zip(self.x, self.y)):

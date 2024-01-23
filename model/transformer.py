@@ -359,19 +359,21 @@ class NanoGPTModel(nn.Module):
     logits = self.linear_layer(y) # (B,T,n_embds) -> (B,T,vocab_size)
     return logits
   
-  def forward(self,xb,yb=None):
+  def forward(self,idx,target):
+    '''
+    idx-> (B,T)
+    
+    target -> (B,T)
+    
+    yb'(logits) -> (B,T,vocab_size)
+    '''
 
-    encoded_x = self.encode(xb)
-    logits = self.decode(yb, encoded_x)
-    # xb -> (B,T)
-    # yb -> (B,T)
-    # yb'(logits) -> (B,T,vocab_size)
-    B,T,C=logits.shape
-    yb=yb.view(B*T)
-    logits=logits.view(B*T,C)
+    encoded_x = self.encode(idx)
+    logits = self.decode(target[:,:-1], encoded_x)
+    B,T,C = logits.shape
 
     #negative log likelihood loss / nll
-    loss=F.cross_entropy(logits,yb)
+    loss=F.cross_entropy(logits.view(B*T,C),target[:,1:].view(B*T))
     return logits,loss
   
   @tt.no_grad()

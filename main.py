@@ -54,10 +54,11 @@ if __name__ == '__main__':
     #construct the model
     model = nano(config.model)
 
+    #log your data `datetime, cli args via sys.argv and model parameters`
     setup_logging(config,model.get_num_parameters())
 
     #construct the trainer
-    trainer = Trainer(config.trainer, model, dataset)
+    trainer = Trainer(config.trainer, model, train_data)
 
     trainer.set_callback(batch_begin_callback,'batch_begin')
     trainer.set_callback(batch_end_callback,'batch_end')
