@@ -3,10 +3,11 @@ from data.dataset import TextDataset
 from model.trainer import Trainer
 from utils.config import CfgNode as CN
 from utils.logger import setup_logging
-from utils.callbacks import batch_begin_callback
-from utils.callbacks import batch_end_callback
+from utils.callbacks import evaluate_loss
 from utils.pre_processing import load_data
+import torch as tt
 import sys
+import os
 
 # Getting all config
 def get_config():
@@ -60,12 +61,18 @@ if __name__ == '__main__':
     setup_logging(config,model.get_num_parameters())
 
     #construct the trainer
+    '''Customized training loop with a callback to evaluate loss'''
     trainer = Trainer(config.trainer, model, train_data)
+    trainer.set_callback(evaluate_loss,'batch_end')
 
-    # trainer.set_callback(batch_begin_callback,'batch_begin')
-    # trainer.set_callback(batch_end_callback,'batch_end')
-
-    # trainer.run()
+    '''Loading pre-trained weights'''
+    try:
+        checkpoint_path = os.join.path(trainer.checkpoint_work_dir + '/checkpoint.pt')
+        checkpoint_dict = tt.load(checkpoint_path)
+        model.load_state_dict(checkpoint_dict['model_state']) # load model state
+        #load the optimizer also.......       
+    finally:
+        trainer.run()
 
 
     

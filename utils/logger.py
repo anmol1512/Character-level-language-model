@@ -15,10 +15,10 @@ def setup_logging(config,model_total_parameter):
      # Append mode for cli_args.txt file
     with open(os.path.join(work_dir+'/cli_args.txt'), 'a') as f:
         # Save timestamp, number of parameters, and command line arguments
-        f.write(f'{timestamp} - Model parameters: {model_total_parameter/1e6:.2f} - {" ".join(sys.argv)}\n')
+        f.write(f'{timestamp} - Model parameters: {model_total_parameter/1e6:.2f}M - {" ".join(sys.argv)}\n')
     
     #create and write the current configuration in a yaml file config.yaml
     with open(os.path.join(work_dir+'/config.yaml'),'w') as f:
-        yaml.dump(config._dict_repr(),f,default_flow_style=False)
+        yaml.dump(config.dict_repr(),f,default_flow_style=False)
 
 

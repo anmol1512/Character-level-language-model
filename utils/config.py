@@ -22,11 +22,11 @@ class CfgNode:
             else:
                 line.append('{}: {}\n'.format(key,val))
             
-        line=[' '*indent+l for l in line]
+        line=['  '*indent+l for l in line]
         return ''.join(line)
     
     def dict_repr(self):
-        return {key: val._dict_repr() if isinstance(val,CfgNode) else val for key,val in vars(self).items()}
+        return {key: val.dict_repr() if isinstance(val,CfgNode) else val for key,val in vars(self).items()}
     
     def update_dict(self,d):
         vars(self).update(d)
