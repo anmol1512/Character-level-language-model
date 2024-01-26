@@ -1,0 +1,33 @@
+data:
+  block_size
+  min_len
+  test_file_path
+  train_file_path
+  val_file_path
+
+model:
+  attn_drop_ratio
+  block_size
+  device
+  embd_drop_ratio
+  n_block
+  n_embds
+  n_heads
+  resid_drop_ratio
+  vocab_size
+
+system:
+  checkpoint_work_dir
+  config_work_dir
+  manual_seed
+
+trainer:
+  batch_size
+  betas
+  eval_interval
+  eval_iter
+  learning_rate
+  max_epoch
+  max_token
+  num_workers
+  weight_decay

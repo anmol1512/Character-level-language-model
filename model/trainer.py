@@ -1,43 +1,48 @@
 from collections import defaultdict
 from utils.config import CfgNode as CN
 import torch as tt
-from torch.utils.data import Dataloader,RandomSampler
+from torch.utils.data import DataLoader,RandomSampler
 from model.transformer import NanoGPTModel as nano
 from data.dataset import TextDataset
 import time
+import tqdm
 
 class Trainer:
 
     @staticmethod
     def get_default_config():
         C=CN()
+        C.checkpoint_work_dir = 'checkpoint'
 
         #data loader parameter
-        C.num_workers=2
+        C.num_workers = 2
 
         # optimizer Hyperparameters
-        C.max_epoch=None
-        C.learning_rate=1e-4
-        C.weight_decay=0.1
-        C.betas=(0.9,0.98)
-        C.batch_size=128
+        C.max_epoch = None
+        C.learning_rate = 1e-4
+        C.weight_decay = 0.1
+        C.betas = (0.9,0.98)
+        C.batch_size = 128
 
         #inference config
-        C.eval_interval=500
-        C.eval_iter=300
-        C.max_token=2000
+        C.eval_interval = 500
+        C.eval_iter = 300
+        C.max_token = 2000
+        return C
 
-    def __init__(self,config: CN,model: nano,train_data: TextDataset) -> None:
-        self.config=config
-        self.model=model
-        self.train_data=train_data
-        self.optimizer=model.configure_optimizer(self.config)
-        self.callbacks=defaultdict(list)
-        self.device=model.device
+    def __init__(self,config: CN,model: nano,train_data: TextDataset,val_data: TextDataset,test_data: TextDataset) -> None:
+        self.config = config
+        self.model = model
+        self.train_data = train_data
+        self.val_data = val_data
+        self.test_data = test_data
+        self.optimizer = model.configure_optimizer(self.config)
+        self.callbacks = defaultdict(list)
+        self.device = model.device
         
-        print('.....Sending model to {}......'.format(self.device))
+        print('SENDING MODEL TO {}.....................'.format(self.device))
         self.model=self.model.to(self.device)
-        print('.....Running on {}.......'.format(self.device))
+        print('\nSuccess!!')
 
         
         self.current_epoch=0
@@ -63,7 +68,8 @@ class Trainer:
         callbacks=self.callbacks[event]
         for callback in callbacks:
             callback(self)
-    
+
+
     def run(self):
         #for code optimization
         train_data=self.train_data
@@ -71,55 +77,54 @@ class Trainer:
         train_config=self.config
         max_epoch=train_config.max_epoch
         current_epoch=self.current_epoch
-
-        sampler = RandomSampler(train_data,replacement=False)
-        train_batches = Dataloader(
-            train_data,
-            batch_size=train_config.batch_size,
-            sampler=sampler,
-            shuffle=False,
-            pin_memory=True,
-            num_workers=train_config.num_workers
-            )
+        optimizer=self.optimizer
         
+        min_loss = float('inf')
+        best_model_state = None
+        best_optimizer_state = None
+        best_step = None
+        for curr_epoch in range(max_epoch):
+            model.train()
+            sampler = RandomSampler(train_data,replacement=False)
+            train_batches = DataLoader(
+                train_data,
+                batch_size = train_config.batch_size,
+                sampler = sampler,
+                shuffle = True,
+                pin_memory = True,
+                num_workers = train_config.num_workers
+                )
+            
+            prog_bar = tqdm(enumerate(train_batches), total = len(train_batches))
+            for idx, (x,y) in prog_bar:
+                '''GET A BATCH'''
+                x = x.to(self.device)
+                y = y.to(self.device)
+                
+                ''' FORWARD PASS & COMPUTE LOSS'''
+                _,loss = model(x,y)
+                if loss.item() < min_loss:
+                    min_loss = loss.item()
+                    best_step = idx
+                    best_model_state = model.state_dict()
+                    best_optimizer_state = optimizer.state_dict()
 
-        model.train()
-        it=iter(train_batches)
-        ''' Note: 1 EPOCH IS 1 STEP TOWARDS GLOBAL OPTIMA POINT'''
-        while True:
-            start_time = time.time()
-            self.trigger_callbacks('batch_begin')
+                '''BACK PROPAGATION'''
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward() #gradients computed
 
-            # GET A BATCH OF DATA
-            try:
-                batch = it.__next__()
-            except StopIteration:
-                it = iter(train_batches)
-                batch = it.__next__()
-            batch = [tup.to(train_config.device) for tup in batch]
-            xb,yb = batch
-            xb,yb = xb.to(self.device), yb.to(self.device)
-
-            # FORWARD PASS
-            logits,loss = model(xb,yb)
-
-            # BACK PROPAGATION
-            tt.zero_grad(set_to_none=True)
-            loss.backward() #gradients computed
-
-            # UPDATE PARAMETERS
-            self.optimizer.step()
-
-
-
-            end_time=time.time()
-            step_time=end_time-start_time
+                '''UPDATE PARAMETERS'''
+                optimizer.step()
+                
+                            
+            checkpoint_data = dict(
+                    epoch = curr_epoch,
+                    step = best_step,
+                    model_state = best_model_state,
+                    optim_state = best_optimizer_state
+                )
+            tt.save(checkpoint_data,train_config.checkpoint_work_dir+'/checkpoint.pt')
             self.trigger_callbacks('batch_end')
-            current_epoch+=1
-
-
-            if max_epoch is not None and current_epoch>=max_epoch:
-                break
 
             
             

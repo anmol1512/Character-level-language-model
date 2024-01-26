@@ -15,13 +15,12 @@ def get_config():
     # SYSTEM CONFIG
     C.system = CN()
     C.system.manual_seed = 1902
-    C.system.config_work_dir = '/config'
-    C.system.checkpoint_work_dir = '/checkpoint'
+    C.system.config_work_dir = 'config'
 
     # MODEL CONFIG
     C.model = nano.get_default_config()
-    C.model.n_decoder_layer = 8
-    C.model.n_heads = 8
+    C.model.n_block = 8
+    C.model.n_heads = 16
     C.model.n_embds = 512
     
     #DATA CONFIG
@@ -40,30 +39,33 @@ if __name__ == '__main__':
     # Deal with config
     config = get_config()
     user_config = sys.argv[1:]
-    config.update_arg(user_config)
-    print('**************************CONFIG**************************\n')
-    print(config)
-    print('**************************CONFIG**************************\n')
+    config.update_args(user_config)
 
     #construct the dataset
-    '''load dataset and create a TextDataset''' 
-    train_x,train_y = load_data(x = config.data.train_file_path+'/en',y = config.data.train_file_path+'/hi',min_len = config.data.min_len,max_len = config.data.block_size)
+    print('LOADING DATA.........................')
+    '''load dataset and create a custom dataset i.e. TextDataset''' 
+    train_x,train_y = load_data(x_path = config.data.train_file_path+'/en',y_path = config.data.train_file_path+'/hi',min_len = config.data.min_len,max_len = config.data.block_size)
     train_data = TextDataset(config.data,train_x,train_y) # sequence_length is directly propotional to BLUE score
-        
+    
 
     #construct the model
+    print('SETTING UP MODEL.....................')
+    '''create transformer model'''
+    config.model.vocab_size = train_data.get_vocab_size()
+    config.model.block_size = train_data.get_block_size()
     model = nano(config.model)
-
-    #log your data `datetime, cli args via sys.argv and model parameters`
+    
+    '''log your data `datetime, cli args via sys.argv and model parameters`'''
+    print('LOGGING YOUR INFO.....................')
     setup_logging(config,model.get_num_parameters())
 
     #construct the trainer
     trainer = Trainer(config.trainer, model, train_data)
 
-    trainer.set_callback(batch_begin_callback,'batch_begin')
-    trainer.set_callback(batch_end_callback,'batch_end')
+    # trainer.set_callback(batch_begin_callback,'batch_begin')
+    # trainer.set_callback(batch_end_callback,'batch_end')
 
-    trainer.run()
+    # trainer.run()
 
 
     
